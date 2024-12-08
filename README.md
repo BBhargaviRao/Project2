@@ -15,12 +15,6 @@ This project focuses on analyzing the structure of a Wikipedia link graph to ide
    - Mutual links stored in Parquet format.
    - Connected components stored in Parquet format, with component ID and page ID.
 
----
-
-Got it! Here's the corrected section explaining how to run the code based on the EMR workflow:  
-
----
-
 ## How to Run the Code  
 
 ### Setting Up the Environment  
@@ -31,10 +25,6 @@ Got it! Here's the corrected section explaining how to run the code based on the
 2. **Update the `startemr` Script**:  
    - Open the `startemr` file.  
    - Replace the placeholders for the main code and entry point S3 paths with the paths you noted earlier.  
-
-Got it! Here's the revised section:  
-
----
 
 ## How to Run the Code  
 
