@@ -17,32 +17,60 @@ This project focuses on analyzing the structure of a Wikipedia link graph to ide
 
 ---
 
-## **How to Run the Code**
+Got it! Here's the corrected section explaining how to run the code based on the EMR workflow:  
 
-### **Setting Up the Environment**
-Ensure you have the required dependencies installed. Follow these steps:
-1. Install Python dependencies (e.g., PySpark, boto3, unittest).
-2. Configure the `CS535_S3_WORKSPACE` environment variable to point to the desired S3 bucket.
+---
 
-### **Running the Entry Point**
-To run the code that computes mutual links and connected components, execute the following command in your terminal:
+## How to Run the Code  
 
-```bash
-spark-submit entry_point_file.py
-```
+### Setting Up the Environment  
+1. **Prepare Your Files**:  
+   - Upload the main code file and the entry point file to your S3 bucket.  
+   - Note the S3 paths of these files.  
 
-The script performs the following:
-1. Loads the datasets from S3.
-2. Extracts mutual links.
-3. Computes connected components iteratively.
-4. Saves the results back to S3 in Parquet format.
+2. **Update the `startemr` Script**:  
+   - Open the `startemr` file.  
+   - Replace the placeholders for the main code and entry point S3 paths with the paths you noted earlier.  
 
-### **Running the Test Suite**
-The automated test suite uses synthetic datasets for validation. To run the test suite:
+Got it! Here's the revised section:  
 
-```bash
-python -m unittest test_suite_file.py
-```
+---
+
+## How to Run the Code  
+
+### Setting Up the Environment  
+1. **Prepare Your Files**:  
+   - Upload the main code file and the entry point file to your S3 bucket.  
+   - Note the S3 paths of these files.  
+
+2. **Update the `startemr.py` Script**:  
+   - Open the `startemr.py` script.  
+   - Replace the placeholders for the main code and entry point S3 paths with the paths you noted earlier.  
+
+### Running the Code  
+1. Run the `startemr.py` script:  
+
+   ```bash  
+   python startemr.py  
+   ```  
+
+2. The script performs the following steps:  
+   - Launches an EMR cluster.  
+   - Executes the Spark job using the provided entry point file.  
+   - Processes the datasets stored in S3 (pagelinks, page, linktarget, redirect).  
+   - Computes mutual links and connected components iteratively.  
+   - Saves the output back to your S3 bucket in Parquet format.  
+
+### Running the Test Suite  
+The automated test suite uses synthetic datasets for validation.  
+
+1. Ensure the test suite and synthetic datasets are uploaded to S3.  
+2. Update the `startemr.py` script with the S3 paths for the test suite.  
+3. Run the `startemr.py` script:  
+
+   ```bash  
+   python startemr.py  
+   ```  
 
 The test suite validates:
 1. Correct mutual links are extracted from synthetic data.
