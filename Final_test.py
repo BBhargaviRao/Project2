@@ -1,146 +1,201 @@
-import unittest
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
-from pyspark.sql.types import StructType, StructField, LongType, IntegerType, StringType, BooleanType
-from Final_P2 import process_wiki_data, find_connected_components
+from pyspark import StorageLevel
+import os
+from pyspark.sql import SparkSession, DataFrame
 
 
 class DFIO:
     def __init__(self, spark):
         self.spark = spark
 
-    def read(self, path):
-        path = "/Users/bhargaviraobondada/Downloads/test/data"
-        return self.spark.read.json(path)
+    def read(self, path: str) -> DataFrame:
+        full_path = f"{os.environ['CS535_S3_WORKSPACE']}{path}"
+        return self.spark.read.parquet(full_path)
 
-    def write(self, df, path):
-        path = f"/Users/bhargaviraobondada/Downloads/test/{path}"
-        df.coalesce(1).write.mode("OVERWRITE").json(path)
+    def write(self, df: DataFrame, path: str, mode: str = "OVERWRITE") -> None:
+        workspace = os.environ['CS535_S3_WORKSPACE']
+        df.write.mode(mode).parquet(f"{workspace}{path}")
 
-@staticmethod
-# def read_json(spark, path,schema):
-#         path = f"./data/{path}"
-#         return spark.read.json(path)
+def parquet(spark,prefix):
+    files = spark.read.parquet(f"s3://bsu-c535-fall2024-commons/arjun-workspace/{prefix}/")
+    files.persist(StorageLevel.MEMORY_AND_DISK).createOrReplaceTempView(prefix)
 
-def read_json(spark, path, schema):
-    print(f"Reading JSON from: {path}")  # Debugging line
-    return spark.read.schema(schema).json(path)
+def process_wiki_data(page_df, pagelinks_df, redirect_df, linktarget_df):
+    if page_df.isEmpty():
+        print("page_df is empty")
+        return None
+    if pagelinks_df.isEmpty():
+        print("pagelinks_df is empty")
+        return None
+    if redirect_df.isEmpty():
+        print("redirect_df is empty")
+        return None
+    if linktarget_df.isEmpty():
+        print("linktarget_df is empty")
+        return None
+   
 
+    filtered_page_df = page_df.filter(F.col("page_namespace") == 0)
 
-exp_links = frozenset({
-    (1, 2),  # Mutual links between Page 1 and Page 2
-    (2, 3),  # Mutual links between Page 2 and Page 3
-    (4, 5),  # Mutual links between Page 4 and Page 5
-    (6, 7)   # Mutual links between Page 6 and Page 7
-})
+    # Join linktarget_df with page_df to map link targets to page IDs
+    result_df = (
+        linktarget_df
+        .join(
+            filtered_page_df,
+            (linktarget_df.lt_title == filtered_page_df.page_title) & (filtered_page_df.page_namespace == linktarget_df.lt_namespace),
+            "inner"
+        )
+    )
 
-exp_components = frozenset([
-    frozenset([1, 2, 3]),  # Connected component with pages 1, 2, and 3
-    frozenset([4, 5]),     # Connected component with pages 4 and 5
-    frozenset([6, 7])      # Connected component with pages 6 and 7
-])
+    # Join pagelinks_df with result_df to get the linked pages
+    linked_pages_df = (
+        pagelinks_df
+        .join(result_df,
+              pagelinks_df.pl_target_id == result_df.lt_id,
+              "inner")
+        .select(
+            pagelinks_df.pl_from.alias("source_id"),  # Using pl_from as the source page ID
+            result_df.page_id.alias("target_id")      # Getting the target page ID from result_df
+        )
+    )
 
+    # Join redirect_df with page_df to resolve redirects
+    redirect_page_df = (
+        redirect_df
+        .filter(redirect_df.rd_namespace == 0)  # Select only rows with rd_namespace equal to 0
+        .join(
+            filtered_page_df,
+            (redirect_df.rd_title == page_df.page_title) & (redirect_df.rd_namespace == filtered_page_df.page_namespace),
+            "inner"
+        )
+        .select(
+            redirect_df.rd_from.alias("rd_source"),  # Original page that redirects
+            filtered_page_df.page_id.alias("rd_target")       # Target page ID after the redirect
+        )
+    )
 
-class TestMutualLinks(unittest.TestCase):
-    def test_create_links_and_components(self):
-        spark = SparkSession.builder \
-            .appName("Test") \
-            .config("spark.driver.extraJavaOptions", "-Djava.security.manager=allow") \
-            .getOrCreate()
+    # Perform left joins on linked_pages_df with redirect_page_df for source and target
+    final_linked_pages_df = (
+        linked_pages_df
+        .join(redirect_page_df.alias("redirect_source"),
+              linked_pages_df.source_id == F.col("redirect_source.rd_source"),
+              "left")  # Left join for source
+        .join(redirect_page_df.alias("redirect_target"),
+              linked_pages_df.target_id == F.col("redirect_target.rd_source"),
+              "left")  # Left join for target
+    )
 
-        dfio = DFIO(spark)
+    # Create 'source_final' and 'target_final' columns using coalesce
+    final_linked_pages_df = final_linked_pages_df.withColumn(
+        "source_final",
+        F.coalesce(F.col("redirect_source.rd_target"), linked_pages_df.source_id)
+    ).withColumn(
+        "target_final",
+        F.coalesce(F.col("redirect_target.rd_target"), linked_pages_df.target_id)
+    )
 
+    # Extract mutual links
+    mutual_links_df = (
+        final_linked_pages_df.alias("df1")
+        .join(
+            final_linked_pages_df.alias("df2"),
+            (F.col("df1.source_final") == F.col("df2.target_final")) &
+            (F.col("df1.target_final") == F.col("df2.source_final")),
+            "inner"
+        )
+        .select(
+            F.col("df1.source_final").alias("page_a"),
+            F.col("df1.target_final").alias("page_b")
+        )
+        .filter(F.col("page_a") < F.col("page_b"))
+        .distinct()
+    )
+    mutual_links_df.count()
+    mutual_links_df.show()
+    return mutual_links_df
     
-            # Schema for "page" table
-        page_schema = StructType([
-                StructField("page_id", LongType(), True),
-                StructField("page_title", StringType(), True),
-                StructField("page_namespace", IntegerType(), True),
-                StructField("page_content_model", StringType(), True),
-                StructField("page_is_redirect", BooleanType(), True),
-            ])
-
-            # Schema for "pagelinks" table
-        pagelinks_schema = StructType([
-                StructField("pl_from", LongType(), True),
-                StructField("pl_from_namespace", IntegerType(), True),
-                StructField("pl_target_id", LongType(), True),
-            ])
-
-            # Schema for "redirect" table
-        redirect_schema = StructType([
-                StructField("rd_from", LongType(), True),
-                StructField("rd_namespace", IntegerType(), True),
-                StructField("rd_title", StringType(), True),
-                StructField("rd_fragment", StringType(), True),
-            ])
-
-            # Schema for "linktarget" table
-        linktarget_schema = StructType([
-                StructField("lt_id", LongType(), True),
-                StructField("lt_title", StringType(), True),
-                StructField("lt_namespace", IntegerType(), True),
-            ])
-
-        #     return page_schema, pagelinks_schema, redirect_schema, linktarget_schema
-
-        # page_schema, pagelinks_schema, redirect_schema, linktarget_schema = get_schemas()
-
-        # # Reading data
-        # page_file_path = "./test/data/page.jsonl"
-        # linktarget_file_path = "./test/data/linktarget.jsonl"
-        # pagelinks_file_path = "./test/data/pagelinks.jsonl"
-        # redirect_file_path = "./test/data/redirect.jsonl"
-
-        # # Load JSON files with their respective schemas
-        # page_df = spark.read.schema(page_schema).json(page_file_path)
-        # pagelinks_df = spark.read.schema(linktarget_schema).json(linktarget_file_path)
-        # redirect_df = spark.read.schema(pagelinks_schema).json(pagelinks_file_path)
-        # linktarget_df = spark.read.schema(redirect_schema).json(redirect_file_path)
-        # print(page_df)
-
-        # Read JSON files with schemas using the function
-
-        page_df = read_json(spark, "/Users/bhargaviraobondada/Downloads/test/data/linktarget.jsonl", page_schema)
-        pagelinks_df = read_json(spark, "/Users/bhargaviraobondada/Downloads/test/data/page.jsonl", pagelinks_schema)
-        redirect_df = read_json(spark, "/Users/bhargaviraobondada/Downloads/test/data/redirect.jsonl", redirect_schema)
-        linktarget_df = read_json(spark, "/Users/bhargaviraobondada/Downloads/test/data/linktarget.jsonl", linktarget_schema)
-
-        # Show the data for verification
-        page_df.show()
-        pagelinks_df.show()
-        redirect_df.show()
-        linktarget_df.show()
 
 
-        # Process the wiki data to find mutual links
-        mutual_links = process_wiki_data(
-            spark, page_df, linktarget_df, pagelinks_df, redirect_df
+def find_connected_components(
+    mutual_links_df: DataFrame, 
+    dfio,
+    # s3_bucket: str, 
+    # s3_path: str,
+    checkpoint_interval: int = 3,
+    checkpoint_dir:str ="checkpoint"
+):
+    iteration = 0
+    converged = False
+
+    # Create initial DataFrame with `pageid` and `component_id`
+    combined_links_df = (
+        mutual_links_df.select(F.col("page_a").alias("pageid"))
+        .union(mutual_links_df.select(F.col("page_b").alias("pageid")))
+        .distinct()
+    )
+    combined_links_with_id_df = combined_links_df.withColumn("component_id", F.col("pageid"))
+    combined_links_with_id_df.persist(StorageLevel.MEMORY_AND_DISK)
+
+    while not converged:
+        iteration += 1
+
+        # Create bidirectional edges
+        edges_df_1 = mutual_links_df.select(
+            F.col("page_a").alias("source_vertex"),
+            F.col("page_b").alias("target_vertex")
+        )
+        edges_df_2 = mutual_links_df.select(
+            F.col("page_b").alias("source_vertex"),
+            F.col("page_a").alias("target_vertex")
+        )
+        bidirectional_edges_df = edges_df_1.union(edges_df_2).distinct()
+        bidirectional_edges_df.persist(StorageLevel.MEMORY_AND_DISK)
+
+        # Join to propagate component IDs
+        result1_df = bidirectional_edges_df.join(
+            combined_links_with_id_df,
+            bidirectional_edges_df["source_vertex"] == combined_links_with_id_df["pageid"]
+        ).select(
+            F.col("target_vertex"),  # Destination vertex
+            F.col("component_id")    # Respective component ID
         )
 
-        # Write mutual links to a file
-        dfio.write(mutual_links, "mutual_links")
-
-        # Collect the actual mutual links and compare with the expected ones
-        actual_links = frozenset(tuple(r) for r in mutual_links.collect())
-        self.assertEqual(actual_links, exp_links)
-
-        # Prepare the edges for connected components
-        edges = mutual_links.selectExpr("page_a as src", "page_b as dst")
-
-        # Find connected components
-        cc = find_connected_components(spark, mutual_links, dfio)
-
-        # Write the connected components to a file
-        dfio.write(cc, "wikipedia_components")
-
-        # Group the connected components and compare with expected components
-        groups = frozenset(
-            frozenset(c.members) for c in cc.groupby("component")
-            .agg(F.expr("collect_list(vertex) as members")).collect()
+        # Union and update component IDs
+        union_df = result1_df.union(combined_links_with_id_df.select(
+            F.col("pageid").alias("target_vertex"),
+            F.col("component_id")
+        ))
+        updated_components_df = union_df.groupBy("target_vertex").agg(
+            F.min("component_id").alias("min_component_id")
         )
-        self.assertEqual(groups, exp_components)
+        union_df.persist(StorageLevel.MEMORY_AND_DISK)
 
+        # Check for convergence
+        changes = (
+            combined_links_with_id_df
+            .join(updated_components_df, combined_links_with_id_df["pageid"] == updated_components_df["target_vertex"])
+            .filter(F.col("component_id") != F.col("min_component_id"))
+            .count()
+        )
+        print(f"Iteration {iteration}: Number of changes = {changes}")
+        converged = (changes == 0)
 
-if __name__ == "__main__":
-    unittest.main()
+        # Update component IDs
+        combined_links_with_id_df = updated_components_df.withColumnRenamed("target_vertex", "pageid").withColumnRenamed(
+            "min_component_id", "component_id"
+        )
+
+        if iteration % checkpoint_interval == 0 or converged:
+            checkpoint_path = f"{checkpoint_dir}/iteration_{iteration+1}"
+    
+        # Write the checkpoint
+            dfio.write(combined_links_with_id_df, path=checkpoint_path)
+            print(f"Checkpoint saved to {checkpoint_path}")
+    
+        # Read the checkpoint back
+            combined_links_with_id_df = dfio.read(path=checkpoint_path)
+            print(f"Checkpoint read from {checkpoint_path}")
+
+    return combined_links_with_id_df
+
